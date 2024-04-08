@@ -21,13 +21,22 @@ rec {
       dontBuild = true;
       installPhase = ''
         mkdir -p "$out/bin"
-        cp "${sdkSrc}/scripts/link_wrap.sh" "$out/bin"
+        if [ -d "${sdkSrc}" ]; then
+            cp "${sdkSrc}/ledger_device_sdk/link_wrap.sh" "$out/bin"
+        else
+            cd "$out/bin"; tar xf "${sdkSrc}" --wildcards "*link_wrap.sh" --transform='s:.*/::'
+        fi
+        substituteInPlace $out/bin/link_wrap.sh \
+          --replace 'llvm-objcopy' '$OBJCOPY' \
+          --replace 'llvm-nm' '$NM'
         chmod +x "$out/bin/link_wrap.sh"
       '';
     };
 
   makeApp = { rootFeatures ? [ "default" ], release ? true, device }:
     let collection = alamgu.perDevice.${device};
+        ledger-secure-sdk-path = import ./dep/ledger-secure-sdk-${device}/thunk.nix;
+        bindings = (alamgu.thunkSource ./dep/ledger_secure_sdk_sys-bindings) + "/${device}/bindings.rs";
     in import app-nix {
       inherit rootFeatures release;
       pkgs = collection.ledgerPkgs;
@@ -36,7 +45,7 @@ rec {
         # modified arguemnts.
         (pkgs: (collection.buildRustCrateForPkgsLedger pkgs).override {
           defaultCrateOverrides = pkgs.defaultCrateOverrides // {
-            nanos_sdk = attrs: {
+            ledger_device_sdk = attrs: {
               passthru = (attrs.passthru or {}) // {
                 link_wrap = makeLinkerScript {
                   pkgs = pkgs.buildPackages;
@@ -45,15 +54,54 @@ rec {
               };
             };
             ${appName} = attrs: let
-              sdk = lib.findFirst (p: lib.hasPrefix "rust_nanos_sdk" p.name) (builtins.throw "no sdk!") attrs.dependencies;
+              sdk = lib.findFirst (p: lib.hasPrefix "rust_ledger_device_sdk" p.name) (builtins.throw "no sdk!") attrs.dependencies;
             in {
               preHook = collection.gccLibsPreHook;
               extraRustcOpts = attrs.extraRustcOpts or [] ++ [
                 "-C" "linker=${sdk.link_wrap}/bin/link_wrap.sh"
-                "-C" "link-arg=-T${sdk.lib}/lib/nanos_sdk.out/link.ld"
-                "-C" "link-arg=-T${sdk.lib}/lib/nanos_sdk.out/${device}_layout.ld"
+                "-C" "link-arg=-T${sdk.lib}/lib/ledger_device_sdk.out/link.ld"
+                "-C" "link-arg=-T${sdk.lib}/lib/ledger_device_sdk.out/${device}_layout.ld"
               ];
               passthru = (attrs.passthru or {}) // { inherit sdk; };
+            };
+
+            # HACK: Dont do bindgen in ledger_secure_sdk_sys, patch the build.rs and inject pre-generated bindings.rs
+            ledger_secure_sdk_sys = attrs: {
+              patches = [ ./disable-generate-bindings.patch ];
+              postUnpack = ''
+                substituteInPlace $sourceRoot/src/lib.rs \
+                  --replace "concat!(env!(\"OUT_DIR\"), \"/bindings.rs\")" "\"./bindings.rs\""
+                cp ${bindings} $sourceRoot/src/bindings.rs
+              '';
+              preConfigure = ''
+                export LEDGER_SDK_PATH="${ledger-secure-sdk-path}"
+              '';
+            };
+
+            # HACK: Dont build bindgen, and other packages
+            rustix = attrs: {
+              buildPhase = ''
+                touch "$out"
+              '';
+              installPhase = ''
+                touch "$out"
+              '';
+            };
+            which = attrs: {
+              buildPhase = ''
+                touch "$out"
+              '';
+              installPhase = ''
+                touch "$out"
+              '';
+            };
+            bindgen = attrs: {
+              buildPhase = ''
+                touch "$out"
+              '';
+              installPhase = ''
+                touch "$out"
+              '';
             };
           };
         })
@@ -76,6 +124,7 @@ rec {
   in collection.ledgerPkgs.runCommandCC "${appName}-${device}-tar-src" {
     nativeBuildInputs = [
       alamgu.cargo-ledger
+      alamgu.ledgerctl
       alamgu.ledgerRustPlatform.rust.cargo
     ];
     strictDeps = true;
@@ -86,7 +135,7 @@ rec {
     mkdir src
     touch src/main.rs
 
-    cargo-ledger --use-prebuilt ${appExe} --hex-next-to-json ledger ${device}
+    cargo ledger --use-prebuilt ${appExe} --hex-next-to-json build ${device}
 
     dest=$out/${appName}-${device}
     mkdir -p $dest/dep
@@ -189,6 +238,9 @@ rec {
           sdkSrc = alamgu.thunkSource ./dep/ledger-nanos-sdk;
         })
       ];
+      shellHook = old.shellHook + ''
+        export TARGET_JSON="${alamgu.thunkSource ./dep/ledger-nanos-sdk}/ledger_device_sdk/${device}.json"
+      '';
     });
 
     archiveSource = makeArchiveSource { inherit appExe device; };
@@ -219,8 +271,8 @@ rec {
 
     speculosDeviceFlags = {
       nanos = [ "-m" "nanos" ];
-      nanosplus = [ "-m" "nanosp" "-a" "1" ];
-      nanox = [ "-m" "nanox" "-a" "5" ];
+      nanosplus = [ "-m" "nanosp" ];
+      nanox = [ "-m" "nanox" ];
     }.${device} or (throw "Unknown target device: `${device}'");
 
     speculosCmd = [
@@ -273,7 +325,7 @@ rec {
       sha256 = "0h6yl6rv8xkc81gzs1xs1gl6aw5k2xaz63avg0rxbj6nnl7qdr8l";
     };
     patches = [ ./pocket-core.patch ];
-    vendorSha256 = "04rwxmmk2za27ylyxidd499bb2c0ssrishgnfnq7wm6f1b99vbs0";
+    vendorHash = "sha256-RJk7lUkqshH8eKmkx6swDRKXjF1rabHwnZLJppj+Nss=";
     doCheck = false;
   };
   pocket-cli-cmd-renamed = pkgs.linkFarm "pocket-cmd" [
