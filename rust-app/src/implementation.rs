@@ -35,7 +35,7 @@ const fn mktfn<A, B, C, D>(
 pub type GetAddressImplT = impl InterpParser<Bip32Key, Returning = ArrayVec<u8, 128>>;
 
 // Need a path of length 5, as make_bip32_path panics with smaller paths
-pub const BIP32_PREFIX: [u32; 2] = nanos_sdk::ecc::make_bip32_path(b"m/44'/635'");
+pub const BIP32_PREFIX: [u32; 2] = ledger_device_sdk::ecc::make_bip32_path(b"m/44'/635'");
 
 pub const fn get_address_impl<const PROMPT: bool>() -> GetAddressImplT {
     Action(
@@ -79,6 +79,7 @@ pub const fn get_address_impl<const PROMPT: bool>() -> GetAddressImplT {
 }
 
 //const fn show_address<const TITLE: &'static str>() -> impl JsonInterp<JsonString, State: Debug, Returning: Debug>
+#[allow(clippy::type_complexity)]
 const fn show_address<const TITLE: &'static str>(
 ) -> Action<JsonStringAccumulate<64>, fn(&ArrayVec<u8, 64>, &mut Option<()>) -> Option<()>> {
     Action(
@@ -113,6 +114,7 @@ const SEND_MESSAGE_ACTION: SendMessageAction = Preaction(
             field_from_address: JsonStringAccumulate::<64>,
             field_to_address: JsonStringAccumulate::<64>,
         },
+        #[allow(clippy::type_complexity)]
         mkfn(
             |o: &SendValue<
                 Option<ArrayVec<u8, 64>>,
@@ -235,6 +237,7 @@ const STAKE_MESSAGE_ACTION: StakeMessageAction = Preaction(
             field_value: JsonStringAccumulate::<64>,
             field_output_address: JsonStringAccumulate::<64>,
         },
+        #[allow(clippy::type_complexity)]
         mkfn(
             |o: &StakeValue<
                 Option<ArrayVec<ArrayVec<u8, 4>, STAKE_CHAINS_LIST_SIZE>>,
@@ -245,7 +248,7 @@ const STAKE_MESSAGE_ACTION: StakeMessageAction = Preaction(
             >,
              destination: &mut Option<()>| {
                 let chains = o.field_chains.as_ref()?.as_slice();
-                if chains.len() == 0 {
+                if chains.is_empty() {
                     return None;
                 }
                 unsafe {
@@ -330,7 +333,7 @@ impl<S> DynamicStackBoxSlot<S> {
     fn new(s: S) -> DynamicStackBoxSlot<S> {
         DynamicStackBoxSlot(s, false)
     }
-    fn to_box(&mut self) -> DynamicStackBox<S> {
+    fn convert_to_box(&mut self) -> DynamicStackBox<S> {
         if self.1 {
             panic!();
         }
@@ -420,15 +423,15 @@ impl<Q: Default, T, S: DynParser<T, Parameter = DynamicStackBox<Q>>> ParserCommo
 impl<Q: Default, T, S: DynParser<T, Parameter = DynamicStackBox<Q>> + InterpParser<T>>
     InterpParser<T> for WithStackBoxed<S>
 {
-    fn parse<'a, 'b>(
+    fn parse<'a>(
         &self,
-        state: &'b mut Self::State,
+        state: &mut Self::State,
         chunk: &'a [u8],
         destination: &mut Option<Self::Returning>,
     ) -> ParseResult<'a> {
         if !state.2 {
             self.0
-                .init_param(state.1.to_box(), &mut state.0, destination);
+                .init_param(state.1.convert_to_box(), &mut state.0, destination);
         }
         state.2 = true;
         self.0.parse(&mut state.0, chunk, destination)
@@ -476,11 +479,11 @@ pub const SIGN_IMPL: SignImplT = WithStackBoxed(DynBind(
         // And ask the user if this is the key the meant to sign with:
         mktfn(
             |path: &ArrayVec<u32, 10>, destination, mut ed: DynamicStackBox<Ed25519>| {
+                ed.init(path.clone(), false).ok()?;
                 with_public_keys(path, false, |_, pkh: &PKH| {
                     unsafe {
-                        SIGNING_ADDRESS.0 = pkh.0.clone();
+                        SIGNING_ADDRESS.0 = pkh.0;
                     }
-                    ed.init(path.clone())?;
                     // *destination = Some(ed);
                     set_from_thunk(destination, || Some(ed)); //  Ed25519::new(path).ok());
                     Ok::<_, SignTempError>(())
@@ -525,6 +528,7 @@ pub const SIGN_IMPL: SignImplT = WithStackBoxed(DynBind(
                                 unstake_message: UNSTAKE_MESSAGE_ACTION,
                             },
                         },
+                        #[allow(clippy::type_complexity)]
                         mkfn(
                             |o: &PoktCmd<
                                 Option<()>,
@@ -607,8 +611,8 @@ pub static BLIND_SIGN_IMPL: BlindSignImplT = Preaction(
             // And ask the user if this is the key the meant to sign with:
             mktfn(
                 |path: &ArrayVec<u32, 10>, destination, mut ed: DynamicStackBox<Ed25519>| {
+                    ed.init(path.clone(), false).ok()?;
                     with_public_keys(path, false, |_, pkh: &PKH| {
-                        ed.init(path.clone())?;
                         try_option(|| -> Option<()> {
                             scroller("Sign for Address", |w| Ok(write!(w, "{pkh}")?))?;
                             Some(())
@@ -758,9 +762,9 @@ pub enum MessageState<SendMessageState, UnjailMessageState, StakeMessageState, U
 fn init_str<const N: usize>() -> <JsonStringAccumulate<N> as ParserCommon<JsonString>>::State {
     <JsonStringAccumulate<N> as ParserCommon<JsonString>>::init(&JsonStringAccumulate)
 }
-fn call_str<'a, const N: usize>(
+fn call_str<const N: usize>(
     ss: &mut <JsonStringAccumulate<N> as ParserCommon<JsonString>>::State,
-    token: JsonToken<'a>,
+    token: JsonToken<'_>,
     dest: &mut Option<<JsonStringAccumulate<N> as ParserCommon<JsonString>>::Returning>,
 ) -> Result<(), Option<OOB>> {
     <JsonStringAccumulate<N> as JsonInterp<JsonString>>::parse(
@@ -798,10 +802,10 @@ impl ParserCommon<MessageSchema> for DropInterp {
 }
 
 impl JsonInterp<MessageSchema> for DropInterp {
-    fn parse<'a>(
+    fn parse(
         &self,
         state: &mut Self::State,
-        token: JsonToken<'a>,
+        token: JsonToken<'_>,
         destination: &mut Option<Self::Returning>,
     ) -> Result<(), Option<OOB>> {
         <DropInterp as JsonInterp<JsonAny>>::parse(&DropInterp, state, token, destination)
@@ -850,10 +854,10 @@ where
     <UnstakeInterp as ParserCommon<UnstakeValueSchema>>::State: core::fmt::Debug,
 {
     #[inline(never)]
-    fn parse<'a>(
+    fn parse(
         &self,
         state: &mut Self::State,
-        token: JsonToken<'a>,
+        token: JsonToken<'_>,
         destination: &mut Option<Self::Returning>,
     ) -> Result<(), Option<OOB>> {
         match state {

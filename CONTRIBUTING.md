@@ -27,7 +27,7 @@ The easiest way to get all these dependencies is with Nix:
 ```bash
 nix-shell -A $DEVICE.rustShell
 cd rust-app/
-cargo-ledger ledger -l $DEVICE
+cargo ledger build -l $DEVICE
 ````
 where `DEVICE` is one of
  - `nanos` for Nano S
@@ -59,7 +59,7 @@ Using Nix, from the root level of this repo, run:
 ```bash
 nix-shell -A $DEVICE.rustShell
 cd rust-app/
-cargo test --target=$DEVICE.json
+cargo test --target=$TARGET_JSON
 ```
 
 ## Deploying development builds to real hardware

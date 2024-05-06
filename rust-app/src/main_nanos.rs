@@ -5,11 +5,12 @@ use crate::settings::*;
 
 use core::fmt::Write;
 use ledger_crypto_helpers::hasher::{Base64Hash, Hasher, SHA256};
+use ledger_device_sdk::io;
+use ledger_device_sdk::uxapp::{UxEvent, BOLOS_UX_OK};
 use ledger_log::{info, trace};
 use ledger_parser_combinators::interp_parser::call_me_maybe;
 use ledger_parser_combinators::interp_parser::OOB;
 use ledger_prompts_ui::{handle_menu_button_event, show_menu, write_scroller};
-use nanos_sdk::io;
 
 #[allow(dead_code)]
 pub fn app_main() {
@@ -19,7 +20,7 @@ pub fn app_main() {
 
     let mut idle_menu = IdleMenuWithSettings {
         idle_menu: IdleMenu::AppMain,
-        settings: Settings::default(),
+        settings: Settings,
     };
     let mut busy_menu = BusyMenu::Working;
 
@@ -73,7 +74,7 @@ pub fn app_main() {
                     ParsersState::NoState => {
                         if let Some(DoExitApp) = handle_menu_button_event(&mut idle_menu, btn) {
                             info!("Exiting app at user direction via root menu");
-                            nanos_sdk::exit_app(0)
+                            ledger_device_sdk::exit_app(0)
                         }
                     }
                     _ => {
@@ -87,6 +88,11 @@ pub fn app_main() {
                 trace!("Button done");
             }
             io::Event::Ticker => {
+                if UxEvent::Event.request() != BOLOS_UX_OK {
+                    UxEvent::block();
+                    // Redisplay application menu here
+                    menu(&states, &idle_menu, &busy_menu);
+                }
                 //trace!("Ignoring ticker event");
             }
         }
@@ -94,7 +100,7 @@ pub fn app_main() {
 }
 
 use arrayvec::ArrayVec;
-use nanos_sdk::io::Reply;
+use ledger_device_sdk::io::Reply;
 
 use ledger_parser_combinators::interp_parser::InterpParser;
 
@@ -214,7 +220,7 @@ fn run_parser_apdu<P: InterpParser<A, Returning = ArrayVec<u8, 128>>, A, const N
     let block: &[u8] = comm.get_data()?;
 
     let host_cmd: HostToLedgerCmd =
-        HostToLedgerCmd::try_from(*block.get(0).ok_or(io::StatusWords::Unknown)?)?;
+        HostToLedgerCmd::try_from(*block.first().ok_or(io::StatusWords::Unknown)?)?;
 
     trace!("Host cmd: {:?}", host_cmd);
     match host_cmd {
@@ -401,7 +407,7 @@ fn handle_apdu(
             comm.append(&[LedgerToHostCmd::ResultFinal as u8]);
             comm.append(concat!("Pocket ", env!("CARGO_PKG_VERSION")).as_ref());
         }
-        Ins::Exit => nanos_sdk::exit_app(0),
+        Ins::Exit => ledger_device_sdk::exit_app(0),
     }
     Ok(())
 }
